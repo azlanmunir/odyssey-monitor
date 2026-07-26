@@ -124,7 +124,8 @@ Raw availability is not a useful urgency signal by itself. The primary metric is
 Default policy:
 
 - Rows are ordered screen-to-back from the official seat-map DOM.
-- The first three physical seat rows are excluded.
+- AMC excludes the first six physical rows nearest the screen.
+- Regal, evaluated by the Codex heartbeat, excludes the first five physical rows nearest the screen.
 - Wheelchair spaces are excluded.
 - Companion positions are excluded.
 - Disabled checkboxes are taken/unavailable.
@@ -137,7 +138,7 @@ Each refreshed showtime stores:
 {
   "rawAvailable": 51,
   "acceptableAvailable": 0,
-  "excludedFrontRows": ["A", "B", "C"],
+  "excludedFrontRows": ["A", "B", "C", "D", "E", "F"],
   "largestAdjacentRun": 0,
   "hasPartyBlock": null,
   "topSuggestions": []
@@ -149,7 +150,7 @@ Each refreshed showtime stores:
 The supplied improvement note said the August 19 10:00 a.m. AMC show had 51 raw seats and six acceptable seats. Re-analysis of the captured official DOM found:
 
 - 51 raw available seats
-- 45 in excluded rows A–C
+- 45 available seats in rows A–C, which are inside the newly excluded AMC rows A–F
 - 6 openings in row N
 - all 6 row N openings labeled wheelchair
 - **0 acceptable non-accessible seats**
@@ -205,11 +206,17 @@ The launchd check job wakes every 15 minutes. The application decides whether an
 - All other times: every 120 minutes.
 - Seat maps: every 480 minutes, plus new dates, new/watched showtimes, and required confirmations.
 
-This keeps the cheap dated listing check responsive during AMC’s stated Wednesday posting window without repeatedly opening every seat map.
+This keeps the cheap dated listing check responsive during the community-observed Tuesday/Wednesday schedule-finalization window without repeatedly opening every seat map. Neither AMC nor Regal publishes an official universal Monday-evening public drop time.
 
 When a weekly block of dates appears, the checker walks forward one date at a time and stops at the first not-yet-listed day. Each apparent new date receives the required double read and one official seat-map identity confirmation. Every future date already stored as bookable remains in the active listing and seat-refresh set after the horizon advances; watched showtime IDs are evaluated across all of those dates.
 
 If a tracked date becomes empty, the checker preserves its prior data and marks the first two runs partial. It retires the date from active polling only after three consecutive runs in which two settled official reads both remain empty. The state says `sold_out` only when both reads explicitly say sold out; otherwise it says `delisted`. Historical showtimes and the six-read evidence are retained, and a one-time HEALTH message explains the transition.
+
+### Booking-habit research
+
+Research on July 26, 2026 did not validate the claim that both chains publish new weekly tickets on Monday evenings. Community reports for [AMC/Odyssey](https://www.reddit.com/r/NYCmovies/comments/1u26jbo/how_often_does_amc_update_new_showtimes_i_want_to/) and [Regal](https://www.reddit.com/r/RegalUnlimited/comments/1rdiqrz/when_does_new_week_post/) generally distinguish Monday booking decisions from public showtime publication, which varies by theatre and more often completes Tuesday or Wednesday. The monitor therefore keeps its existing two-hour AMC checks, Wednesday burst, and four-hour Regal checks instead of relying on Monday night.
+
+[AMC officially documents](https://www.amctheatres.com/faqs/amc-stubs?_h=somethings-not-working--membership-cards--i-need-an-additional-card) a movie-level `Remind Me` function that sends an email when tickets become purchasable. AMC does not promise exact-minute delivery or an IMAX 70mm-specific alert. Regal’s [official help](https://www.regmovies.com/help/app) and [App Store listing](https://apps.apple.com/us/app/regal-movie-tickets-made-easy/id502912815) document app ticketing but do not currently promise a comparable movie-specific on-sale notification. App reminders may be enabled as a backup where visible, but neither replaces this monitor.
 
 ## Regal strategy
 
@@ -237,7 +244,7 @@ Important fields:
 ```json
 {
   "seatPreferences": {
-    "excludedFrontRows": 3,
+    "excludedFrontRows": 6,
     "excludeWheelchair": true,
     "excludeCompanion": true,
     "partySize": null,
@@ -455,7 +462,7 @@ No software running only on this Mac can execute while the machine is powered of
 |---|---|---|
 | Use acceptable seats for urgency | Implemented | Correct and essential; raw availability materially misstates booking quality. |
 | Telegram URGENT/DIGEST/HEALTH | Implemented and active | Ticket messages require at least one acceptable seat; HEALTH remains independent. |
-| Wednesday 15-minute AMC burst | Implemented and activated | Supported by AMC’s stated posting window and cheap dated checks; the cadence change was explicitly reported during activation. |
+| Wednesday 15-minute AMC burst | Implemented and activated | Community observations cluster public schedule completion on Tuesday/Wednesday; cheap dated checks justify the temporary burst without treating the timing as guaranteed. |
 | Separate run histories plus mutual watchdogs | Implemented | A hung checker cannot block its watcher, and Codex and the standalone service check each other’s freshness. |
 | Row-aware counts and adjacency | Implemented with corrected accessibility handling | Required for reliable scarcity and exact suggestions. |
 | Deterministic AMC headless monitor | Implemented | Official pages provide strong format/showtime/seat identity. |

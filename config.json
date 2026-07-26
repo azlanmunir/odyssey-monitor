@@ -6,7 +6,7 @@
     "requiredFormat": "IMAX 70MM"
   },
   "seatPreferences": {
-    "excludedFrontRows": 3,
+    "excludedFrontRows": 6,
     "excludeWheelchair": true,
     "excludeCompanion": true,
     "partySize": null,

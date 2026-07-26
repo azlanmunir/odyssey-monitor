@@ -28,13 +28,17 @@ test(
       await page.setContent(fs.readFileSync(fixture, "utf8"), { waitUntil: "domcontentloaded" });
       const rows = (await extractAmcSeatRows(page)).filter((row) => row.seats.length);
       const analysis = analyzeSeatRows(rows, {
-        excludedFrontRows: 3,
+        excludedFrontRows: 6,
         excludeWheelchair: true,
         excludeCompanion: true,
         partySize: null,
       });
       assert.equal(analysis.rawAvailable, 51);
       assert.equal(analysis.acceptableAvailable, 0);
+      assert.deepEqual(
+        analysis.excludedFrontRows,
+        ["A", "B", "C", "D", "E", "F"],
+      );
       assert.deepEqual(
         analysis.rows.filter((row) => row.acceptableAvailable > 0),
         [],
