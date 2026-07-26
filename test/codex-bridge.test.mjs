@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   assessSeatData,
   readCodexBridge,
+  requiresCodexSeatFreshness,
   summarizeSeatData,
 } from "../src/lib/codex-bridge.mjs";
 
@@ -127,4 +128,9 @@ test("venue seat data becomes unhealthy when any horizon showtime is stale", () 
   assert.equal(result.healthy, false);
   assert.equal(result.oldestCheckedAt, "2026-07-28T12:00:00Z");
   assert.ok(result.ageMinutes > 1_440);
+});
+
+test("Codex seat freshness governs Regal only because standalone AMC has its own clock", () => {
+  assert.equal(requiresCodexSeatFreshness("regal_hacienda_crossings"), true);
+  assert.equal(requiresCodexSeatFreshness("amc_metreon_16"), false);
 });

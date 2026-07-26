@@ -9,10 +9,15 @@ import {
   dedupeAlerts,
   healthAlert,
   newDateAlert,
+  newShowtimeAlert,
   seatAlerts,
   telegramEligibleAlerts,
 } from "./alerts.mjs";
-import { assessSeatData, readCodexBridge } from "./codex-bridge.mjs";
+import {
+  assessSeatData,
+  readCodexBridge,
+  requiresCodexSeatFreshness,
+} from "./codex-bridge.mjs";
 import {
   appendJsonLine,
   readFileLockStatus,
@@ -51,6 +56,7 @@ function initialState() {
     lastDigestDate: null,
     amc: {
       horizon: null,
+      scanCursorDate: null,
       dates: {},
       consecutiveFailures: 0,
       failureOpen: false,
@@ -58,6 +64,7 @@ function initialState() {
       consecutivePartialChecks: 0,
       partialFailureGenerationAt: null,
       candidateConfirmationFailures: {},
+      trackedDateMissingObservations: {},
     },
     codexBridge: null,
     alerts: { sent: {} },
@@ -126,11 +133,81 @@ export function trackedBookableDates(state, knownHorizon, today = pacificDate())
       ([date, record]) =>
         date >= today &&
         (record?.status === "bookable" ||
-          Object.keys(record?.showtimes || {}).length > 0),
+          (!record?.status && Object.keys(record?.showtimes || {}).length > 0)),
     )
     .map(([date]) => date);
-  if (knownHorizon && knownHorizon >= today) dates.push(knownHorizon);
+  const knownRecord = state.amc?.dates?.[knownHorizon];
+  if (
+    knownHorizon &&
+    knownHorizon >= today &&
+    (!knownRecord || knownRecord.status === "bookable")
+  ) {
+    dates.push(knownHorizon);
+  }
   return [...new Set(dates)].sort();
+}
+
+export function recordTrackedDateMissing(
+  state,
+  date,
+  first,
+  second,
+  now = new Date(),
+) {
+  state.amc.trackedDateMissingObservations ||= {};
+  const previous = state.amc.trackedDateMissingObservations[date];
+  const record = {
+    count: (previous?.count || 0) + 1,
+    firstSeenAt: previous?.firstSeenAt || now.toISOString(),
+    lastSeenAt: now.toISOString(),
+    firstStatus: first.soldOut ? "sold_out" : "not_listed",
+    secondStatus: second.soldOut ? "sold_out" : "not_listed",
+  };
+  state.amc.trackedDateMissingObservations[date] = record;
+  return record;
+}
+
+export function trackedDateRetirementStatus(missing, config) {
+  if (
+    missing.count <
+    config.polling.trackedDateMissingConfirmationThreshold
+  ) {
+    return null;
+  }
+  return missing.firstStatus === "sold_out" &&
+    missing.secondStatus === "sold_out"
+    ? "sold_out"
+    : "delisted";
+}
+
+export function trackedDateRetirementHealthAlert(date, missing, status) {
+  const description =
+    status === "sold_out"
+      ? "explicitly sold out"
+      : "absent from the IMAX 70MM listing";
+  return healthAlert(
+    `tracked-date-retired:${date}:${missing.firstSeenAt}`,
+    `AMC ${date} was ${description} on ${missing.count} consecutive checks, each confirmed by two settled official reads. It has been removed from active polling; historical showtime data remains preserved. Check manually: ${amcListingUrl(date)}`,
+  );
+}
+
+export function newTrackedShowtimeAlert(
+  previousDate,
+  date,
+  showtime,
+  seatMap,
+  { baseline = false } = {},
+) {
+  const priorShowtimes = previousDate?.showtimes || {};
+  if (
+    baseline ||
+    !seatMap ||
+    Object.keys(priorShowtimes).length === 0 ||
+    priorShowtimes[showtime.id]
+  ) {
+    return null;
+  }
+  return newShowtimeAlert(date, showtime, seatMap);
 }
 
 function shouldRefreshSeats(state, config, force) {
@@ -314,9 +391,11 @@ export async function runCheck(config, options = {}) {
 
     const knownHorizon =
       state.amc.horizon ||
+      state.amc.scanCursorDate ||
       state.codexBridge?.theaters?.amc_metreon_16?.horizon ||
       null;
     if (!knownHorizon) throw new Error("No AMC horizon is available to anchor the forward check");
+    state.amc.scanCursorDate ||= knownHorizon;
 
     const browser = await openAmcBrowser();
     let fullCheckSucceeded = false;
@@ -331,17 +410,63 @@ export async function runCheck(config, options = {}) {
         pacificDate(now),
       );
       for (const date of activeDates) {
-        const listing = await readAmcListing(browser, date, config);
+        let listing = await readAmcListing(browser, date, config);
         const previous = state.amc.dates[date] || null;
-        const changed = listingChanged(previous, listing);
         if (!listing.showtimes.length) {
-          const meaning = listing.soldOut ? "sold out" : "not currently listed";
-          run.failures.push(
-            `AMC tracked date ${date} is ${meaning}; prior data was preserved as stale.`,
-          );
-          continue;
+          const settled = await readAmcListing(browser, date, config);
+          if (settled.showtimes.length) {
+            listing = settled;
+            delete state.amc.trackedDateMissingObservations?.[date];
+            run.changes.push(
+              `AMC ${date} returned after a transient empty listing read`,
+            );
+          } else {
+            const missing = recordTrackedDateMissing(
+              state,
+              date,
+              listing,
+              settled,
+              now,
+            );
+            const retirementStatus = trackedDateRetirementStatus(
+              missing,
+              config,
+            );
+            if (retirementStatus) {
+              state.amc.dates[date] = {
+                ...previous,
+                status: retirementStatus,
+                checkedAt: settled.checkedAt,
+                trackingEndedAt: now.toISOString(),
+                retirementEvidence: missing,
+              };
+              delete state.amc.trackedDateMissingObservations?.[date];
+              run.changes.push(
+                `AMC ${date} confirmed ${retirementStatus === "sold_out" ? "sold out" : "delisted"}; active polling retired`,
+              );
+              alertCandidates.push(
+                trackedDateRetirementHealthAlert(
+                  date,
+                  missing,
+                  retirementStatus,
+                ),
+              );
+            } else {
+              const meaning =
+                listing.soldOut && settled.soldOut
+                  ? "sold out"
+                  : "not currently listed";
+              run.failures.push(
+                `AMC tracked date ${date} is ${meaning} on two settled reads (${missing.count}/${config.polling.trackedDateMissingConfirmationThreshold}); prior data was preserved as stale.`,
+              );
+            }
+            continue;
+          }
+        } else {
+          delete state.amc.trackedDateMissingObservations?.[date];
         }
 
+        const changed = listingChanged(previous, listing);
         if (changed) run.changes.push(`AMC showtime set changed on ${date}`);
         state.amc.dates[date] = mergeListing(state, listing);
         if (!state.amc.horizon || date > state.amc.horizon) {
@@ -366,16 +491,45 @@ export async function runCheck(config, options = {}) {
                 run.failures,
               );
               refreshedAnySeat ||= Boolean(seatMap);
+              const addedShowtimeAlert = newShowtime
+                ? newTrackedShowtimeAlert(
+                    previous,
+                    date,
+                    showtime,
+                    seatMap,
+                    { baseline: options.baseline },
+                  )
+                : null;
+              if (addedShowtimeAlert) {
+                alertCandidates.push(addedShowtimeAlert);
+              }
             }
           }
         }
       }
+      const remainingActiveDates = trackedBookableDates(
+        state,
+        null,
+        pacificDate(now),
+      );
+      state.amc.horizon = remainingActiveDates.at(-1) || null;
       if (refreshedAnySeat) {
         state.lastSeatRefreshAt = new Date().toISOString();
         state.lastSeatSuccessAt = state.lastSeatRefreshAt;
       }
+      await dispatchAlerts(
+        config,
+        state,
+        alertCandidates,
+        options.dryRun,
+        run.notifications,
+      );
+      alertCandidates.length = 0;
 
-      let candidateDate = addDays(state.amc.horizon || knownHorizon, 1);
+      let candidateDate = addDays(
+        state.amc.scanCursorDate || knownHorizon,
+        1,
+      );
       let addedAnyDate = false;
       for (let index = 0; index < 14; index += 1) {
         const first = await readAmcListing(browser, candidateDate, config);
@@ -418,6 +572,7 @@ export async function runCheck(config, options = {}) {
         state.amc.dates[candidateDate].showtimes[firstShow.id].seatMap = confirmation;
         refreshedAnySeat = true;
         state.amc.horizon = candidateDate;
+        state.amc.scanCursorDate = candidateDate;
         addedAnyDate = true;
         run.changes.push(`Confirmed new AMC IMAX 70MM date ${candidateDate}`);
         for (const showtime of second.showtimes.slice(1)) {
@@ -441,8 +596,19 @@ export async function runCheck(config, options = {}) {
             .map((showtime) => showtime.seatMap)
             .find((seatMap) => seatMap?.acceptableAvailable >= minimumAcceptable);
           if (available >= minimumAcceptable && eligibleConfirmation) {
-            alertCandidates.push(
-              newDateAlert(candidateDate, second.showtimes, eligibleConfirmation, available),
+            await dispatchAlerts(
+              config,
+              state,
+              [
+                newDateAlert(
+                  candidateDate,
+                  second.showtimes,
+                  eligibleConfirmation,
+                  available,
+                ),
+              ],
+              options.dryRun,
+              run.notifications,
             );
           }
         }
@@ -597,6 +763,7 @@ export async function runWatchdog(config, { dryRun = false } = {}) {
   for (const [venueKey, theater] of Object.entries(
     state.codexBridge?.theaters || {},
   )) {
+    if (!requiresCodexSeatFreshness(venueKey)) continue;
     const showtimes = theater.latestDateShowtimes || {};
     if (
       !theater.horizon ||
@@ -607,12 +774,7 @@ export async function runWatchdog(config, { dryRun = false } = {}) {
     }
     const seatData = assessSeatData(showtimes, venueSeatLimit, now);
     if (seatData.healthy) continue;
-    const venueName =
-      venueKey === "amc_metreon_16"
-        ? "AMC Metreon 16"
-        : venueKey === "regal_hacienda_crossings"
-          ? "Regal Hacienda Crossings"
-          : venueKey;
+    const venueName = "Regal Hacienda Crossings";
     alerts.push(
       healthAlert(
         `venue-seat-data-stale:${venueKey}:${theater.horizon}:${seatData.oldestCheckedAt || "never"}`,

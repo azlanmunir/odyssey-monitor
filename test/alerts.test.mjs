@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   acceptableSeatCount,
   healthAlert,
+  newShowtimeAlert,
   seatAlerts,
   telegramEligibleAlerts,
 } from "../src/lib/alerts.mjs";
@@ -33,6 +34,35 @@ test("urgent threshold is based on acceptable seats, not raw seats", () => {
   );
   assert.equal(alerts.length, 1);
   assert.match(alerts[0].text, /20 acceptable \(49 raw\)/);
+});
+
+test("a new showtime with acceptable inventory is URGENT-eligible", () => {
+  const alert = newShowtimeAlert(
+    "2026-08-19",
+    {
+      id: "123",
+      datetime: "2026-08-19T18:00:00-07:00",
+      bookingUrl: "https://www.amctheatres.com/showtimes/123/seats",
+    },
+    seatMap({ acceptableAvailable: 12 }),
+  );
+  assert.equal(alert.tier, "URGENT");
+  assert.equal(alert.acceptableSeatCount, 12);
+  assert.match(alert.text, /NEW IMAX 70MM SHOWTIME/);
+  assert.deepEqual(telegramEligibleAlerts([alert], 1), [alert]);
+});
+
+test("the central seat gate suppresses a zero-seat new-showtime alert", () => {
+  const alert = newShowtimeAlert(
+    "2026-08-19",
+    {
+      id: "123",
+      datetime: "2026-08-19T18:00:00-07:00",
+      bookingUrl: "https://www.amctheatres.com/showtimes/123/seats",
+    },
+    seatMap({ acceptableAvailable: 0 }),
+  );
+  assert.deepEqual(telegramEligibleAlerts([alert], 1), []);
 });
 
 test("no repeated threshold alert when already below threshold", () => {

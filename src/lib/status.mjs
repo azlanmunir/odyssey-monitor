@@ -1,5 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { assessSeatData } from "./codex-bridge.mjs";
+import {
+  assessSeatData,
+  requiresCodexSeatFreshness,
+} from "./codex-bridge.mjs";
 import { readJson } from "./io.mjs";
 import { STATE_PATH, WATCHDOG_STATE_PATH } from "./paths.mjs";
 import { minutesSince } from "./time.mjs";
@@ -66,7 +69,8 @@ export async function monitorStatus(config, now = new Date()) {
   );
   const venueSeatData = Object.entries(state.codexBridge?.theaters || {})
     .filter(
-      ([, theater]) =>
+      ([venueKey, theater]) =>
+        requiresCodexSeatFreshness(venueKey) &&
         theater.horizon &&
         theater.status === "available" &&
         Object.keys(theater.latestDateShowtimes || {}).length > 0,

@@ -7,6 +7,10 @@ const NAMES = {
   regal_hacienda_crossings: "Regal Hacienda Crossings",
 };
 
+export function requiresCodexSeatFreshness(venueKey) {
+  return venueKey === "regal_hacienda_crossings";
+}
+
 export function summarizeSeatData(showtimes = {}) {
   const records = Object.values(showtimes);
   const timestamps = records

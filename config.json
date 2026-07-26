@@ -24,7 +24,8 @@
     "schedulerInvocationGraceMinutes": 45,
     "venueSeatDataMaxAgeMinutes": 1440,
     "partialFailureAlertThreshold": 3,
-    "candidateConfirmationFailureAlertThreshold": 3
+    "candidateConfirmationFailureAlertThreshold": 3,
+    "trackedDateMissingConfirmationThreshold": 3
   },
   "notifications": {
     "telegramEnabled": true,

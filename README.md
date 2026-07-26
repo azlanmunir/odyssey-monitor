@@ -163,6 +163,7 @@ The fixture test locks in this result so the accessibility-space regression cann
 Ticket-related Telegram messages are sent only when at least one acceptable seat is confirmed. Subject to that gate, URGENT is sent for:
 
 - A newly confirmed qualifying AMC date.
+- A newly added showtime on an already tracked AMC date, after its fresh official seat map confirms at least one acceptable seat.
 - A Codex-verified horizon advance at either venue.
 - `acceptableAvailable` crossing from above 20 to 20 or below.
 - The last acceptable adjacent block disappearing, once `partySize` is configured.
@@ -184,9 +185,10 @@ Sent for:
 - Standalone AMC success becoming stale.
 - AMC seat-map success becoming stale.
 - Codex state becoming stale at approximately 2.25 times its four-hour cadence.
-- Any horizon showtime at either venue having missing or older-than-24-hours seat data.
+- Any Regal horizon showtime in the Codex bridge having missing or older-than-24-hours seat data.
 - Three consecutive partial AMC checks.
 - A visible candidate AMC date failing official seat-page confirmation three consecutive times.
+- A previously bookable AMC date being retired after three consecutive double-settled checks confirm it is sold out or delisted.
 - A checker exceeding its eight-minute hard runtime limit.
 - A checker lock remaining held beyond its expected runtime.
 - One positive `HEALTH OK` message each Pacific day after 9:00 a.m.
@@ -207,6 +209,8 @@ This keeps the cheap dated listing check responsive during AMC’s stated Wednes
 
 When a weekly block of dates appears, the checker walks forward one date at a time and stops at the first not-yet-listed day. Each apparent new date receives the required double read and one official seat-map identity confirmation. Every future date already stored as bookable remains in the active listing and seat-refresh set after the horizon advances; watched showtime IDs are evaluated across all of those dates.
 
+If a tracked date becomes empty, the checker preserves its prior data and marks the first two runs partial. It retires the date from active polling only after three consecutive runs in which two settled official reads both remain empty. The state says `sold_out` only when both reads explicitly say sold out; otherwise it says `delisted`. Historical showtimes and the six-read evidence are retained, and a one-time HEALTH message explains the transition.
+
 ## Regal strategy
 
 Regal’s official site blocks the unattended headless path used by the standalone process. The code does not attempt CAPTCHA bypass, rotating identities, or high-frequency retries.
@@ -218,7 +222,7 @@ Instead:
 3. The standalone bridge diffs that state.
 4. Horizon advances are eligible for Telegram forwarding.
 5. The watchdog alerts if the four-hour Codex snapshot becomes stale.
-6. The watchdog separately evaluates each horizon showtime’s seat timestamp and raises HEALTH when any is missing or more than 24 hours old.
+6. The watchdog separately evaluates each Regal horizon showtime’s seat timestamp and raises HEALTH when any is missing or more than 24 hours old. AMC freshness comes from the standalone poller’s own successful seat-map clock, avoiding false alarms from Codex’s secondary AMC copy.
 
 Raw Regal seat counts from the older state schema do **not** trigger usable-seat urgency because they do not yet prove row-quality filtering. The upgraded heartbeat prompt now requires raw and acceptable counts on future runs.
 
@@ -265,7 +269,8 @@ Reliability escalation is configured under `polling`:
 {
   "venueSeatDataMaxAgeMinutes": 1440,
   "partialFailureAlertThreshold": 3,
-  "candidateConfirmationFailureAlertThreshold": 3
+  "candidateConfirmationFailureAlertThreshold": 3,
+  "trackedDateMissingConfirmationThreshold": 3
 }
 ```
 
@@ -400,6 +405,7 @@ The Codex state is also snapshot based and remains the source of truth for Regal
 
 - A missing movie section on a future date is `not_yet_listed`, not sold out.
 - A known horizon disappearing is treated as suspicious; prior data is preserved as stale.
+- A tracked date is retired only after three consecutive double-settled empty checks; explicit sold out and delisted remain separate.
 - CAPTCHA/access-denied content raises an explicit failure.
 - Seat-map identity mismatch fails closed and cannot confirm a new date.
 - A transient mismatch between the two new-date listing reads is discarded.
@@ -412,7 +418,7 @@ The Codex state is also snapshot based and remains the source of truth for Regal
 - The watchdog does not take the checker lock and writes separate watchdog state/history. A hung checker therefore cannot prevent its own failure alert.
 - A lock owned by a process that no longer exists is recovered immediately. A live lock older than eight minutes is reported as a hung checker.
 - The watchdog verifies scheduler invocation, AMC listing success, AMC seat-map success, and Regal/Codex freshness independently.
-- The watchdog also checks the oldest horizon-showtime seat timestamp per venue against a 24-hour maximum.
+- The watchdog checks the oldest Regal horizon-showtime seat timestamp against a 24-hour maximum. Standalone AMC seat-map freshness is checked from the poller’s own clock.
 - The Codex heartbeat reads standalone liveness before doing browser work, while the standalone watchdog checks Codex freshness. Either control plane can expose failure of the other.
 
 ## Reliability model and overnight incident
@@ -458,9 +464,12 @@ No software running only on this Mac can execute while the machine is powered of
 | Aggregator Regal pre-signal | Deferred | Useful only as a labeled fallback; it should not add complexity until an official read fails. |
 | User intent configuration | Implemented | Prevents adjacency logic from pretending to know the party’s needs. |
 | Regal bridge field mismatch | Implemented | The prompt’s `acceptable_available` spelling is now accepted and covered by an end-to-end bridge test. |
-| Per-venue seat-data staleness | Implemented | A fresh run can no longer conceal horizon seat counts older than 24 hours. |
+| Regal bridge seat-data staleness | Implemented | A fresh Codex run can no longer conceal Regal horizon seat counts older than 24 hours; AMC uses its independent local seat-map clock. |
 | Refresh all bookable AMC dates | Implemented | Earlier dates remain active after a multi-date horizon advance, including watched showtimes and digest coverage. |
 | Escalate repeated partial/confirmation failures | Implemented | Three consecutive failures generate HEALTH while new-date ticket alerts remain fail-closed. |
+| Urgent alert for a new showtime on a tracked date | Implemented | A fresh official seat map with at least one acceptable seat now triggers immediately instead of waiting for the digest. |
+| Retire repeatedly delisted/sold-out tracked dates | Implemented conservatively | Three consecutive checks with two settled empty reads each end active polling while preserving evidence and distinguishing sold out from delisted. |
+| Ignore Codex AMC seat-copy staleness | Implemented | Standalone AMC has its own authoritative seat-map clock; only Regal depends on Codex seat timestamps. |
 | Expire every dedupe key | Rejected as proposed; incident generations implemented | Blanket expiry would resend unresolved alerts. Generation-scoped keys allow genuine recurrences without noise. |
 | Zero-seat Telegram message | Rejected | It directly conflicts with the user’s explicit requirement that ticket messages require at least one acceptable seat. Daily HEALTH OK prevents silence from implying the monitor is dead. |
 | Normalize AMC HeadlessChrome user agent | Implemented | The UA now mirrors the installed Chrome version without the trivial `HeadlessChrome` token; a live official-page smoke check passed. |
@@ -480,8 +489,11 @@ The test suite currently verifies:
 - HEALTH-alert exemption from the seat gate
 - pending Regal new-date alerts until an acceptable seat appears
 - the prompt-native `acceptable_available` Regal alert path end to end
-- per-venue oldest/missing seat timestamp health
+- Regal oldest/missing seat timestamp health without false alarms from the secondary Codex AMC copy
 - all future bookable AMC dates remaining active
+- new-showtime URGENT eligibility and zero-seat suppression
+- conservative tracked-date retirement after three double-read observations
+- Regal-only Codex seat-freshness routing
 - multi-date digest coverage
 - third-failure candidate-date HEALTH escalation
 - recurrence-safe threshold alert generations

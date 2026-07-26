@@ -3,8 +3,12 @@ import assert from "node:assert/strict";
 import {
   candidateConfirmationHealthAlert,
   digestAlert,
+  newTrackedShowtimeAlert,
   recordCandidateConfirmationFailure,
+  recordTrackedDateMissing,
   trackedBookableDates,
+  trackedDateRetirementHealthAlert,
+  trackedDateRetirementStatus,
 } from "../src/lib/monitor.mjs";
 
 function showtime(id, datetime, acceptableAvailable) {
@@ -35,6 +39,121 @@ test("all future bookable AMC dates remain actively tracked", () => {
   assert.deepEqual(
     trackedBookableDates(state, "2026-08-21", "2026-07-29"),
     ["2026-08-20", "2026-08-21"],
+  );
+});
+
+test("retired AMC dates with preserved historical showtimes are not actively tracked", () => {
+  const state = {
+    amc: {
+      dates: {
+        "2026-08-20": {
+          status: "delisted",
+          showtimes: { historical: {} },
+        },
+        "2026-08-21": {
+          status: "sold_out",
+          showtimes: { historical: {} },
+        },
+        "2026-08-22": {
+          status: "bookable",
+          showtimes: { active: {} },
+        },
+      },
+    },
+  };
+  assert.deepEqual(
+    trackedBookableDates(state, "2026-08-21", "2026-08-20"),
+    ["2026-08-22"],
+  );
+});
+
+test("an added showtime on a tracked date creates an URGENT after seat verification", () => {
+  const added = {
+    id: "new",
+    datetime: "2026-08-20T18:00:00-07:00",
+    bookingUrl: "https://www.amctheatres.com/showtimes/new/seats",
+  };
+  const alert = newTrackedShowtimeAlert(
+    { showtimes: { existing: {} } },
+    "2026-08-20",
+    added,
+    showtime("new", added.datetime, 8).seatMap,
+  );
+  assert.equal(alert?.tier, "URGENT");
+  assert.equal(alert?.acceptableSeatCount, 8);
+  assert.match(alert?.text, /NEW IMAX 70MM SHOWTIME/);
+});
+
+test("new-showtime alert is suppressed for baseline and unverified inventory", () => {
+  const added = {
+    id: "new",
+    datetime: "2026-08-20T18:00:00-07:00",
+  };
+  const previous = { showtimes: { existing: {} } };
+  assert.equal(
+    newTrackedShowtimeAlert(previous, "2026-08-20", added, null),
+    null,
+  );
+  assert.equal(
+    newTrackedShowtimeAlert(
+      previous,
+      "2026-08-20",
+      added,
+      showtime("new", added.datetime, 8).seatMap,
+      { baseline: true },
+    ),
+    null,
+  );
+});
+
+test("a missing tracked date retires only after three double-read observations", () => {
+  const state = {
+    amc: { trackedDateMissingObservations: {} },
+  };
+  const config = {
+    polling: { trackedDateMissingConfirmationThreshold: 3 },
+  };
+  const notListed = { soldOut: false };
+  let observation;
+  for (let count = 1; count <= 3; count += 1) {
+    observation = recordTrackedDateMissing(
+      state,
+      "2026-08-20",
+      notListed,
+      notListed,
+      new Date(`2026-07-29T1${count}:00:00Z`),
+    );
+    assert.equal(
+      trackedDateRetirementStatus(observation, config),
+      count === 3 ? "delisted" : null,
+    );
+  }
+  const alert = trackedDateRetirementHealthAlert(
+    "2026-08-20",
+    observation,
+    "delisted",
+  );
+  assert.match(alert.text, /two settled official reads/);
+  assert.match(alert.text, /removed from active polling/);
+});
+
+test("a tracked date is called sold out only when both settled reads say so", () => {
+  const config = {
+    polling: { trackedDateMissingConfirmationThreshold: 3 },
+  };
+  assert.equal(
+    trackedDateRetirementStatus(
+      { count: 3, firstStatus: "sold_out", secondStatus: "sold_out" },
+      config,
+    ),
+    "sold_out",
+  );
+  assert.equal(
+    trackedDateRetirementStatus(
+      { count: 3, firstStatus: "sold_out", secondStatus: "not_listed" },
+      config,
+    ),
+    "delisted",
   );
 });
 

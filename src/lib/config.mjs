@@ -69,6 +69,7 @@ function validateConfig(config) {
   for (const field of [
     "partialFailureAlertThreshold",
     "candidateConfirmationFailureAlertThreshold",
+    "trackedDateMissingConfirmationThreshold",
   ]) {
     if (!Number.isInteger(config.polling[field]) || config.polling[field] < 2) {
       throw new Error(`polling.${field} must be an integer of at least 2`);

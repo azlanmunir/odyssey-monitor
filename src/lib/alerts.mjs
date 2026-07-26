@@ -25,6 +25,21 @@ export function newDateAlert(date, showtimes, confirmation, acceptableCount) {
   };
 }
 
+export function newShowtimeAlert(date, showtime, seatMap) {
+  return {
+    key: `urgent:new-showtime:amc:${date}:${showtime.id}`,
+    tier: "URGENT",
+    requiresAcceptableSeat: true,
+    acceptableSeatCount: seatMap.acceptableAvailable,
+    text:
+      `URGENT — NEW IMAX 70MM SHOWTIME\n` +
+      `AMC Metreon 16: ${localShowtime(showtime.datetime)}\n` +
+      `${seatMap.acceptableAvailable} acceptable (${seatMap.rawAvailable} raw) on a fresh official seat map.\n` +
+      `${seatMap.topSuggestions?.length ? `Best blocks: ${seatMap.topSuggestions.join("; ")}\n` : ""}` +
+      `${seatMap.bookingUrl || showtime.bookingUrl}`,
+  };
+}
+
 export function seatAlerts(previous, current, preferences) {
   const alerts = [];
   if (!previous) return alerts;
