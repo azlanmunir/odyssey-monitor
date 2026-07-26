@@ -1,0 +1,11 @@
+.env
+data/browser-profile*/
+data/probe/
+data/state.json
+data/runs.jsonl
+data/watchdog-state.json
+data/watchdog-runs.jsonl
+data/last-hard-timeout.json
+data/locks/
+node_modules/
+*.log

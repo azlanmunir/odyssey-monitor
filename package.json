@@ -1,0 +1,20 @@
+{
+  "name": "odyssey-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic IMAX 70mm ticket monitor for The Odyssey at AMC Metreon 16 and Regal Hacienda Crossings, with Telegram alerts.",
+  "scripts": {
+    "check": "node src/cli.mjs check",
+    "baseline": "node src/cli.mjs check --force --baseline",
+    "dry-run": "node src/cli.mjs check --force --baseline --dry-run",
+    "watchdog": "node src/cli.mjs watchdog",
+    "status": "node src/cli.mjs status",
+    "test-telegram": "node src/cli.mjs test-telegram",
+    "probe": "node src/probe.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "playwright": "^1.54.0"
+  }
+}

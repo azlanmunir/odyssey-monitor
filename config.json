@@ -1,0 +1,46 @@
+{
+  "timezone": "America/Los_Angeles",
+  "movie": {
+    "title": "The Odyssey",
+    "amcMoviePath": "/movies/the-odyssey-76238",
+    "requiredFormat": "IMAX 70MM"
+  },
+  "seatPreferences": {
+    "excludedFrontRows": 3,
+    "excludeWheelchair": true,
+    "excludeCompanion": true,
+    "partySize": null,
+    "urgentAcceptableSeatThreshold": 20
+  },
+  "polling": {
+    "normalMinutes": 120,
+    "wednesdayBurstMinutes": 15,
+    "wednesdayBurstStartHour": 9,
+    "wednesdayBurstEndHour": 18,
+    "seatRefreshMinutes": 480,
+    "watchdogGraceMultiplier": 2.25,
+    "codexHeartbeatMinutes": 240,
+    "maxCheckRuntimeMinutes": 8,
+    "schedulerInvocationGraceMinutes": 45,
+    "venueSeatDataMaxAgeMinutes": 1440,
+    "partialFailureAlertThreshold": 3,
+    "candidateConfirmationFailureAlertThreshold": 3
+  },
+  "notifications": {
+    "telegramEnabled": true,
+    "dailyDigestHour": 19,
+    "dailyHealthOkEnabled": true,
+    "dailyHealthOkHour": 9,
+    "minimumAcceptableSeatsForTicketMessages": 1,
+    "healthAlertsBypassSeatMinimum": true
+  },
+  "paths": {
+    "codexState": "/Users/azlanmunir/Documents/New project/odyssey_imax70mm_state.json"
+  },
+  "watch": {
+    "preferredVenue": null,
+    "dates": [],
+    "timeWindows": [],
+    "showtimeIds": []
+  }
+}

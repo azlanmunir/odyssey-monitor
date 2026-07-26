@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.azlan.odyssey-monitor-watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/azlanmunir/odyssey-monitor/src/cli.mjs</string>
+    <string>watchdog</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/azlanmunir/odyssey-monitor</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Minute</key>
+      <integer>7</integer>
+    </dict>
+    <dict>
+      <key>Minute</key>
+      <integer>37</integer>
+    </dict>
+  </array>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/azlanmunir/odyssey-monitor/data/launchd-watchdog.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/azlanmunir/odyssey-monitor/data/launchd-watchdog-error.log</string>
+</dict>
+</plist>
