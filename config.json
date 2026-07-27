@@ -33,7 +33,8 @@
     "dailyHealthOkEnabled": true,
     "dailyHealthOkHour": 9,
     "minimumAcceptableSeatsForTicketMessages": 1,
-    "healthAlertsBypassSeatMinimum": true
+    "healthAlertsBypassSeatMinimum": true,
+    "pendingSeatVerificationEscalationMinutes": 60
   },
   "paths": {
     "codexState": "/Users/azlanmunir/Documents/New project/odyssey_imax70mm_state.json"

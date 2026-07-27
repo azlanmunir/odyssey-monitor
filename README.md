@@ -173,6 +173,8 @@ Threshold alerts are crossing based. A show already under the threshold does not
 
 New-date alerts include an official booking URL. Scarcity alerts include raw and acceptable counts plus up to three exact row/block suggestions.
 
+If a Codex-confirmed Regal horizon advance cannot obtain a usable seat count, it stays pending rather than generating a seat-confirmed URGENT. After 60 minutes, the bridge sends one deduped HEALTH action alert with the date-specific official link and the explicit warning `seat quality unverified`. The pending record remains active, so a later fresh acceptable-seat count can still generate the normal URGENT.
+
 ### DIGEST
 
 At most once per Pacific calendar day, at or after the configured digest hour. It includes every actively tracked AMC date, but only showtimes with at least one acceptable seat, plus horizons, acceptable/raw counts, and acceptable-seat velocity when two measured samples exist. No ticket digest is sent when every checked show has zero acceptable seats.
@@ -187,6 +189,7 @@ Sent for:
 - AMC seat-map success becoming stale.
 - Codex state becoming stale at approximately 2.25 times its four-hour cadence.
 - Any Regal horizon showtime in the Codex bridge having missing or older-than-24-hours seat data.
+- A confirmed new Codex/Regal date remaining without acceptable-seat verification for 60 minutes.
 - Three consecutive partial AMC checks.
 - A visible candidate AMC date failing official seat-page confirmation three consecutive times.
 - A previously bookable AMC date being retired after three consecutive double-settled checks confirm it is sold out or delisted.
@@ -222,6 +225,8 @@ Research on July 26, 2026 did not validate the claim that both chains publish ne
 
 Regal’s official site blocks the unattended headless path used by the standalone process. The code does not attempt CAPTCHA bypass, rotating identities, or high-frequency retries.
 
+The July 26 seat-map incident was a Regal client-route stale-DOM condition, not a Cloudflare block. A showtime click changed the browser to the correct `site/date/id` URL while leaving the theater listing mounted. One fresh-tab navigation to that exact resulting official URL loaded `Select Seats`, Auditorium 21, and the seat grid. The heartbeat now performs that single recovery before declaring a seat map unavailable.
+
 Instead:
 
 1. The active Codex heartbeat reads Regal in a normal controllable browser.
@@ -230,6 +235,7 @@ Instead:
 4. Horizon advances are eligible for Telegram forwarding.
 5. The watchdog alerts if the four-hour Codex snapshot becomes stale.
 6. The watchdog separately evaluates each Regal horizon showtime’s seat timestamp and raises HEALTH when any is missing or more than 24 hours old. AMC freshness comes from the standalone poller’s own successful seat-map clock, avoiding false alarms from Codex’s secondary AMC copy.
+7. A new Regal date that remains seat-unverified for 60 minutes generates one manual-action HEALTH alert rather than remaining silent indefinitely.
 
 Raw Regal seat counts from the older state schema do **not** trigger usable-seat urgency because they do not yet prove row-quality filtering. The upgraded heartbeat prompt now requires raw and acceptable counts on future runs.
 
@@ -265,7 +271,8 @@ Telegram ticket-message gating is configured separately:
 {
   "notifications": {
     "minimumAcceptableSeatsForTicketMessages": 1,
-    "healthAlertsBypassSeatMinimum": true
+    "healthAlertsBypassSeatMinimum": true,
+    "pendingSeatVerificationEscalationMinutes": 60
   }
 }
 ```
@@ -472,6 +479,8 @@ No software running only on this Mac can execute while the machine is powered of
 | User intent configuration | Implemented | Prevents adjacency logic from pretending to know the party’s needs. |
 | Regal bridge field mismatch | Implemented | The prompt’s `acceptable_available` spelling is now accepted and covered by an end-to-end bridge test. |
 | Regal bridge seat-data staleness | Implemented | A fresh Codex run can no longer conceal Regal horizon seat counts older than 24 hours; AMC uses its independent local seat-map clock. |
+| Regal stale client-route recovery | Implemented | If a correct showtime URL retains the listing DOM, the heartbeat opens that exact official URL once in a fresh tab and verifies venue/date/time/format before reading seats. |
+| Escalate a seat-unverified Regal new date | Implemented with policy separation | The bridge waits 60 minutes, then sends one HEALTH action alert labeled `seat quality unverified` with the date-specific official link. It does not falsely claim acceptable-seat confirmation, and the normal URGENT can still follow later. |
 | Refresh all bookable AMC dates | Implemented | Earlier dates remain active after a multi-date horizon advance, including watched showtimes and digest coverage. |
 | Escalate repeated partial/confirmation failures | Implemented | Three consecutive failures generate HEALTH while new-date ticket alerts remain fail-closed. |
 | Urgent alert for a new showtime on a tracked date | Implemented | A fresh official seat map with at least one acceptable seat now triggers immediately instead of waiting for the digest. |
@@ -495,6 +504,7 @@ The test suite currently verifies:
 - suppression of ticket messages at zero acceptable seats
 - HEALTH-alert exemption from the seat gate
 - pending Regal new-date alerts until an acceptable seat appears
+- 60-minute pending Regal escalation, stable dedupe key, manual-check wording, and later seat-confirmed URGENT
 - the prompt-native `acceptable_available` Regal alert path end to end
 - Regal oldest/missing seat timestamp health without false alarms from the secondary Codex AMC copy
 - all future bookable AMC dates remaining active

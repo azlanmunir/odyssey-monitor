@@ -11,6 +11,36 @@ export function requiresCodexSeatFreshness(venueKey) {
   return venueKey === "regal_hacienda_crossings";
 }
 
+export function officialDateUrl(venueKey, officialUrl, date) {
+  if (!officialUrl || !date) return officialUrl || null;
+  try {
+    const url = new URL(officialUrl);
+    if (venueKey === "regal_hacienda_crossings") {
+      const [year, month, day] = date.split("-");
+      url.searchParams.set("date", `${month}-${day}-${year}`);
+    } else {
+      url.searchParams.set("date", date);
+    }
+    return url.toString();
+  } catch {
+    return officialUrl;
+  }
+}
+
+function pendingRecord(value, nowIso) {
+  if (!value) return null;
+  if (typeof value === "string") {
+    return { date: value, firstPendingAt: nowIso };
+  }
+  if (typeof value === "object" && value.date) {
+    return {
+      date: value.date,
+      firstPendingAt: value.firstPendingAt || nowIso,
+    };
+  }
+  return null;
+}
+
 export function summarizeSeatData(showtimes = {}) {
   const records = Object.values(showtimes);
   const timestamps = records
@@ -50,18 +80,22 @@ export function assessSeatData(
   };
 }
 
-export async function readCodexBridge(config, previousBridge = null) {
+export async function readCodexBridge(
+  config,
+  previousBridge = null,
+  now = new Date(),
+) {
   const source = await readJson(config.paths.codexState);
   if (!source?.snapshot) {
-    const now = new Date().toISOString();
+    const nowIso = now.toISOString();
     const unreadableSince =
       previousBridge?.status === "unreadable" && previousBridge.unreadableSince
         ? previousBridge.unreadableSince
-        : now;
+        : nowIso;
     return {
       bridge: {
         status: "unreadable",
-        checkedAt: now,
+        checkedAt: nowIso,
         sourceCheckedAt: null,
         theaters: previousBridge?.theaters || {},
         pendingNewDates: previousBridge?.pendingNewDates || {},
@@ -82,19 +116,27 @@ export async function readCodexBridge(config, previousBridge = null) {
   const pendingNewDates = { ...(previousBridge?.pendingNewDates || {}) };
   const minimumAcceptable =
     config.notifications.minimumAcceptableSeatsForTicketMessages ?? 1;
+  const pendingEscalationMinutes =
+    config.notifications.pendingSeatVerificationEscalationMinutes ?? 60;
+  const nowIso = now.toISOString();
   for (const [key, theater] of Object.entries(snapshot.theaters || {})) {
+    const nextHorizon = theater.last_bookable_date || null;
     theaters[key] = {
-      horizon: theater.last_bookable_date || null,
+      horizon: nextHorizon,
       status: theater.status || "unknown",
       formatLabel: theater.format_label || null,
       officialUrl: theater.official_url || null,
+      officialDateUrl: officialDateUrl(key, theater.official_url, nextHorizon),
       latestDateShowtimes: theater.latest_date_showtimes || {},
     };
     theaters[key].seatData = summarizeSeatData(theaters[key].latestDateShowtimes);
     const priorHorizon = previousBridge?.theaters?.[key]?.horizon;
-    const nextHorizon = theaters[key].horizon;
+    let pending = pendingRecord(pendingNewDates[key], nowIso);
     if (priorHorizon && nextHorizon && nextHorizon > priorHorizon) {
-      pendingNewDates[key] = nextHorizon;
+      pending = { date: nextHorizon, firstPendingAt: nowIso };
+      pendingNewDates[key] = pending;
+    } else if (pending) {
+      pendingNewDates[key] = pending;
     }
     const horizonShowtimes = Object.fromEntries(
       Object.entries(theaters[key].latestDateShowtimes).filter(([showtimeKey]) =>
@@ -103,26 +145,40 @@ export async function readCodexBridge(config, previousBridge = null) {
     );
     const available = nextHorizon ? acceptableSeatCount(horizonShowtimes) : 0;
     if (
-      pendingNewDates[key] &&
-      pendingNewDates[key] === nextHorizon &&
+      pending &&
+      pending.date === nextHorizon &&
       available >= minimumAcceptable
     ) {
       alerts.push(
         codexNewDateAlert(
           NAMES[key] || key,
           nextHorizon,
-          theaters[key].officialUrl,
+          theaters[key].officialDateUrl,
           available,
         ),
       );
       delete pendingNewDates[key];
+    } else if (
+      pending &&
+      pending.date === nextHorizon &&
+      minutesSince(pending.firstPendingAt, now) >= pendingEscalationMinutes
+    ) {
+      alerts.push(
+        healthAlert(
+          `new-date-seat-unverified:${key}:${nextHorizon}:${pending.firstPendingAt}`,
+          `ACTION REQUIRED — CONFIRMED NEW IMAX 70MM DATE\n` +
+            `${NAMES[key] || key}: ${nextHorizon}\n` +
+            `The official listing is confirmed, but acceptable-seat inventory has remained unknown for at least ${pendingEscalationMinutes} minutes. This is not a seat-confirmed ticket alert. Check the official page manually now:\n` +
+            `${theaters[key].officialDateUrl}`,
+        ),
+      );
     }
   }
 
   return {
     bridge: {
       status: "available",
-      checkedAt: new Date().toISOString(),
+      checkedAt: nowIso,
       sourceCheckedAt: snapshot.checked_at || null,
       theaters,
       pendingNewDates,

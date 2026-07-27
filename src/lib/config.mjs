@@ -44,6 +44,16 @@ function validateConfig(config) {
     );
   }
   if (
+    !Number.isFinite(
+      config.notifications.pendingSeatVerificationEscalationMinutes,
+    ) ||
+    config.notifications.pendingSeatVerificationEscalationMinutes < 15
+  ) {
+    throw new Error(
+      "notifications.pendingSeatVerificationEscalationMinutes must be at least 15",
+    );
+  }
+  if (
     !Number.isFinite(config.polling?.maxCheckRuntimeMinutes) ||
     config.polling.maxCheckRuntimeMinutes < 1
   ) {
