@@ -22,6 +22,7 @@ import {
   appendJsonLine,
   readFileLockStatus,
   readJson,
+  readJsonLines,
   writeJsonAtomic,
 } from "./io.mjs";
 import {
@@ -78,6 +79,9 @@ function initialWatchdogState() {
     updatedAt: null,
     lastHealthyPingDate: null,
     lastHardTimeoutAcknowledgedAt: null,
+    lastHardTimeoutFamilyAlertAt: null,
+    suppressedHardTimeoutFamilyCount: 0,
+    lastRecoveryAlertAt: null,
     alerts: { sent: {} },
   };
 }
@@ -294,6 +298,170 @@ async function dispatchAlerts(config, state, alerts, dryRun, notificationResults
       notificationResults.push({ key: alert.key, tier: alert.tier, sent: false, error: error.message });
     }
   }
+}
+
+export function activeHungLock(lockStatus, maximumRuntimeMs) {
+  return Boolean(
+    lockStatus?.exists &&
+      lockStatus.ownerAlive &&
+      lockStatus.ageMs > maximumRuntimeMs,
+  );
+}
+
+export function latestRecoveryEpisode(
+  runs,
+  { suppressedTimeouts = 0, fallbackFailureAt = null } = {},
+) {
+  const checks = (runs || []).filter(
+    (run) =>
+      run?.kind === "check" &&
+      !["skipped_not_due", "running"].includes(run.status),
+  );
+  const latest = checks.at(-1);
+  if (!latest || latest.status !== "success") return null;
+  const recoveredAt = latest.finishedAt || latest.startedAt;
+
+  let failures = 0;
+  let hardTimeouts = 0;
+  let firstFailureAt = null;
+  for (let index = checks.length - 2; index >= 0; index -= 1) {
+    const run = checks[index];
+    if (run.status === "success") break;
+    if (run.status === "failed") failures += 1;
+    if (run.status === "hard_timeout") hardTimeouts += 1;
+    if (["failed", "hard_timeout"].includes(run.status)) {
+      firstFailureAt = run.startedAt || run.finishedAt || firstFailureAt;
+    }
+  }
+  let count = failures + hardTimeouts;
+  if (!count && suppressedTimeouts > 0) {
+    if (
+      fallbackFailureAt &&
+      (!recoveredAt ||
+        new Date(recoveredAt).getTime() <=
+          new Date(fallbackFailureAt).getTime())
+    ) {
+      return null;
+    }
+    hardTimeouts = suppressedTimeouts;
+    count = suppressedTimeouts;
+    firstFailureAt = fallbackFailureAt;
+  }
+  if (!count) return null;
+  return {
+    count,
+    failures,
+    hardTimeouts,
+    firstFailureAt,
+    recoveredAt,
+  };
+}
+
+export function batchedHealthText(alerts) {
+  const body = (alert) =>
+    String(alert.text || "")
+      .replace(/^HEALTH — ODYSSEY MONITOR\s*/i, "")
+      .trim()
+      .replace(/\n/g, "\n  ");
+  return (
+    "HEALTH — ODYSSEY MONITOR\n" +
+    alerts.map((alert) => `• ${body(alert)}`).join("\n")
+  );
+}
+
+export async function dispatchHealthAlertBatch(
+  config,
+  state,
+  alerts,
+  dryRun,
+  notificationResults,
+  { sender = sendTelegram, now = new Date() } = {},
+) {
+  const eligible = telegramEligibleAlerts(
+    alerts,
+    config.notifications.minimumAcceptableSeatsForTicketMessages ?? 1,
+    config.notifications.healthAlertsBypassSeatMinimum,
+  );
+  const unique = dedupeAlerts(eligible, state.alerts.sent);
+  if (!unique.length) return null;
+
+  const keys = unique.map((alert) => alert.key);
+  let result;
+  try {
+    result = await sender(config, batchedHealthText(unique), { dryRun });
+  } catch (error) {
+    result = { sent: false, error: error.message };
+  }
+  const record = {
+    key: `health:batch:${now.toISOString()}`,
+    keys,
+    tier: "HEALTH",
+    ...result,
+  };
+  notificationResults.push(record);
+  if (result.sent) {
+    const sentAt = now.toISOString();
+    for (const key of keys) state.alerts.sent[key] = sentAt;
+  }
+  return record;
+}
+
+export function timeoutFamilyPlan(
+  watchdogState,
+  familyAlerts,
+  {
+    hardTimeoutAlert = null,
+    hardTimeoutAt = null,
+    now = new Date(),
+    cooldownMinutes,
+  },
+) {
+  const cooldownActive = Boolean(
+    watchdogState.lastHardTimeoutFamilyAlertAt &&
+      minutesSince(watchdogState.lastHardTimeoutFamilyAlertAt, now) <
+        cooldownMinutes,
+  );
+  if (!familyAlerts.length) {
+    return {
+      cooldownActive,
+      allowedAlerts: [],
+      allowedKeys: [],
+      suppressedKeys: [],
+      suppressedCount: watchdogState.suppressedHardTimeoutFamilyCount || 0,
+      acknowledgeHardTimeout: false,
+    };
+  }
+  if (cooldownActive) {
+    return {
+      cooldownActive: true,
+      allowedAlerts: [],
+      allowedKeys: [],
+      suppressedKeys: familyAlerts.map((alert) => alert.key),
+      suppressedCount:
+        (watchdogState.suppressedHardTimeoutFamilyCount || 0) +
+        (hardTimeoutAlert ? 1 : 0),
+      acknowledgeHardTimeout: Boolean(hardTimeoutAlert),
+    };
+  }
+
+  const allowedAlerts = [...familyAlerts];
+  const suppressed = watchdogState.suppressedHardTimeoutFamilyCount || 0;
+  if (suppressed) {
+    allowedAlerts.push(
+      healthAlert(
+        `timeout-family-summary:${watchdogState.lastHardTimeoutFamilyAlertAt || "initial"}:${hardTimeoutAt || now.toISOString()}`,
+        `${suppressed} further hard timeout${suppressed === 1 ? "" : "s"} occurred during the ${cooldownMinutes}-minute alert cooldown.`,
+      ),
+    );
+  }
+  return {
+    cooldownActive: false,
+    allowedAlerts,
+    allowedKeys: allowedAlerts.map((alert) => alert.key),
+    suppressedKeys: [],
+    suppressedCount: suppressed,
+    acknowledgeHardTimeout: false,
+  };
 }
 
 export function digestAlert(state, config, now) {
@@ -784,8 +952,9 @@ export async function runWatchdog(config, { dryRun = false } = {}) {
   }
   const lockStatus = await readFileLockStatus(LOCK_PATH);
   const maximumRuntimeMs = config.polling.maxCheckRuntimeMinutes * 60_000;
-  if (lockStatus.exists && lockStatus.ageMs > maximumRuntimeMs) {
-    alerts.push(
+  const timeoutFamilyAlerts = [];
+  if (activeHungLock(lockStatus, maximumRuntimeMs)) {
+    timeoutFamilyAlerts.push(
       healthAlert(
         `checker-hung:${lockStatus.ownerPid || "unknown"}`,
         `The AMC checker lock has been held for ${Math.round(lockStatus.ageMs / 60_000)} minutes; maximum expected runtime is ${config.polling.maxCheckRuntimeMinutes} minutes.`,
@@ -793,58 +962,123 @@ export async function runWatchdog(config, { dryRun = false } = {}) {
     );
   }
   const hardTimeout = await readJson(HARD_TIMEOUT_PATH);
-  let hardTimeoutAlertKey = null;
+  let hardTimeoutAlert = null;
   if (
     hardTimeout?.at &&
     hardTimeout.at !== watchdogState.lastHardTimeoutAcknowledgedAt
   ) {
-    hardTimeoutAlertKey = `health:hard-timeout:${hardTimeout.at}`;
-    alerts.push(
-      healthAlert(
-        `hard-timeout:${hardTimeout.at}`,
-        `A local ${hardTimeout.command || "monitor"} process exceeded its ${hardTimeout.timeoutMinutes || config.polling.maxCheckRuntimeMinutes}-minute hard runtime limit at ${hardTimeout.at}.`,
-      ),
+    hardTimeoutAlert = healthAlert(
+      `hard-timeout:${hardTimeout.at}`,
+      `A local ${hardTimeout.command || "monitor"} process exceeded its ${hardTimeout.timeoutMinutes || config.polling.maxCheckRuntimeMinutes}-minute hard runtime limit at ${hardTimeout.at}.`,
     );
+    timeoutFamilyAlerts.push(hardTimeoutAlert);
   }
 
-  await dispatchAlerts(
+  const timeoutCooldownMinutes =
+    config.notifications.timeoutFamilyCooldownMinutes;
+  const familyPlan = timeoutFamilyPlan(
+    watchdogState,
+    timeoutFamilyAlerts,
+    {
+      hardTimeoutAlert,
+      hardTimeoutAt: hardTimeout?.at,
+      now,
+      cooldownMinutes: timeoutCooldownMinutes,
+    },
+  );
+  const allowedTimeoutFamilyKeys = familyPlan.allowedKeys;
+  if (familyPlan.suppressedKeys.length) {
+    watchdogState.suppressedHardTimeoutFamilyCount =
+      familyPlan.suppressedCount;
+    if (familyPlan.acknowledgeHardTimeout) {
+      watchdogState.lastHardTimeoutAcknowledgedAt = hardTimeout.at;
+    }
+    run.suppressedTimeoutFamilyFindings = familyPlan.suppressedKeys;
+  } else {
+    alerts.push(...familyPlan.allowedAlerts);
+  }
+
+  const today = pacificDate(now);
+  const parts = pacificParts(now);
+  const hasCurrentFinding =
+    alerts.length > 0 || timeoutFamilyAlerts.length > 0;
+  let recoveryAlert = null;
+  if (!hasCurrentFinding) {
+    const recovery = latestRecoveryEpisode(
+      await readJsonLines(RUNS_PATH, []),
+      {
+        suppressedTimeouts:
+          watchdogState.suppressedHardTimeoutFamilyCount || 0,
+        fallbackFailureAt:
+          hardTimeout?.at ||
+          watchdogState.lastHardTimeoutFamilyAlertAt ||
+          null,
+      },
+    );
+    if (recovery) {
+      const detail = [
+        recovery.hardTimeouts
+          ? `${recovery.hardTimeouts} hard timeout${recovery.hardTimeouts === 1 ? "" : "s"}`
+          : null,
+        recovery.failures
+          ? `${recovery.failures} failed run${recovery.failures === 1 ? "" : "s"}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" and ");
+      const suppressed = watchdogState.suppressedHardTimeoutFamilyCount || 0;
+      recoveryAlert = healthAlert(
+        `recovered:${recovery.firstFailureAt || "unknown"}:${recovery.recoveredAt || "unknown"}`,
+        `RECOVERED — a full AMC check succeeded after ${detail}; all watchdog-monitored paths are healthy.${suppressed ? ` ${suppressed} further hard-timeout alert${suppressed === 1 ? " was" : "s were"} suppressed during cooldown.` : ""}`,
+      );
+      if (!watchdogState.alerts.sent[recoveryAlert.key]) {
+        alerts.push(recoveryAlert);
+      } else {
+        recoveryAlert = null;
+      }
+    }
+  }
+
+  let dailyHealthyAlert = null;
+  if (
+    !hasCurrentFinding &&
+    !recoveryAlert &&
+    Number(parts.hour) >= config.notifications.dailyHealthOkHour &&
+    watchdogState.lastHealthyPingDate !== today &&
+    config.notifications.dailyHealthOkEnabled
+  ) {
+    dailyHealthyAlert = healthAlert(
+      `daily-ok:${today}`,
+      `All monitoring paths are healthy. AMC last succeeded ${state.lastAmcSuccessAt}; Regal/Codex state last succeeded ${state.codexBridge?.sourceCheckedAt}.`,
+    );
+    alerts.push(dailyHealthyAlert);
+  }
+
+  const batch = await dispatchHealthAlertBatch(
     config,
     watchdogState,
     alerts,
     dryRun,
     run.notifications,
+    { now },
   );
-  if (
-    hardTimeoutAlertKey &&
-    run.notifications.some(
-      (item) => item.key === hardTimeoutAlertKey && item.sent,
-    )
-  ) {
-    watchdogState.lastHardTimeoutAcknowledgedAt = hardTimeout.at;
-  }
-
-  const today = pacificDate(now);
-  const parts = pacificParts(now);
-  const healthy =
-    alerts.length === 0 &&
-    Number(parts.hour) >= config.notifications.dailyHealthOkHour &&
-    watchdogState.lastHealthyPingDate !== today;
-  if (healthy && config.notifications.dailyHealthOkEnabled) {
-    const healthyAlert = healthAlert(
-      `daily-ok:${today}`,
-      `All monitoring paths are healthy. AMC last succeeded ${state.lastAmcSuccessAt}; Regal/Codex state last succeeded ${state.codexBridge?.sourceCheckedAt}.`,
-    );
-    await dispatchAlerts(
-      config,
-      watchdogState,
-      [healthyAlert],
-      dryRun,
-      run.notifications,
-    );
+  if (batch?.sent) {
     if (
-      run.notifications.some(
-        (item) => item.key === healthyAlert.key && item.sent,
-      )
+      allowedTimeoutFamilyKeys.some((key) => batch.keys.includes(key))
+    ) {
+      watchdogState.lastHardTimeoutFamilyAlertAt = now.toISOString();
+      watchdogState.suppressedHardTimeoutFamilyCount = 0;
+    }
+    if (hardTimeoutAlert && batch.keys.includes(hardTimeoutAlert.key)) {
+      watchdogState.lastHardTimeoutAcknowledgedAt = hardTimeout.at;
+    }
+    if (recoveryAlert && batch.keys.includes(recoveryAlert.key)) {
+      watchdogState.lastRecoveryAlertAt = now.toISOString();
+      watchdogState.suppressedHardTimeoutFamilyCount = 0;
+    }
+    if (
+      dailyHealthyAlert &&
+      batch.keys.includes(dailyHealthyAlert.key)
     ) {
       watchdogState.lastHealthyPingDate = today;
     }

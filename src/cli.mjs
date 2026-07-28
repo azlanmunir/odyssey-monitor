@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-import fs from "node:fs";
-import path from "node:path";
 import { loadConfig } from "./lib/config.mjs";
+import { recordHardTimeoutSync } from "./lib/hard-timeout.mjs";
 import { withFileLock } from "./lib/io.mjs";
 import { describeRun, runCheck, runWatchdog } from "./lib/monitor.mjs";
-import { HARD_TIMEOUT_PATH, LOCK_PATH } from "./lib/paths.mjs";
+import { LOCK_PATH } from "./lib/paths.mjs";
 import { formatMonitorStatus, monitorStatus } from "./lib/status.mjs";
 import { sendTelegram } from "./lib/telegram.mjs";
 
@@ -14,19 +13,20 @@ const flags = new Set(args);
 
 if (command === "check") {
   const timeoutMinutes = config.polling.maxCheckRuntimeMinutes;
+  const checkStartedAt = new Date().toISOString();
   const hardTimer = setTimeout(() => {
-    const event = {
-      at: new Date().toISOString(),
-      command: "check",
-      timeoutMinutes,
-      pid: process.pid,
-    };
-    fs.mkdirSync(path.dirname(HARD_TIMEOUT_PATH), { recursive: true });
-    fs.writeFileSync(HARD_TIMEOUT_PATH, `${JSON.stringify(event, null, 2)}\n`, {
-      mode: 0o600,
-    });
-    console.error(`HARD TIMEOUT — checker exceeded ${timeoutMinutes} minutes`);
-    process.exit(124);
+    try {
+      recordHardTimeoutSync({
+        pid: process.pid,
+        timeoutMinutes,
+        startedAt: checkStartedAt,
+      });
+    } catch (error) {
+      console.error(`HARD TIMEOUT persistence failed — ${error.message}`);
+    } finally {
+      console.error(`HARD TIMEOUT — checker exceeded ${timeoutMinutes} minutes`);
+      process.exit(124);
+    }
   }, timeoutMinutes * 60_000);
   hardTimer.unref();
 

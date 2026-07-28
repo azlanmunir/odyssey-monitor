@@ -81,6 +81,7 @@ The following rules are architectural constraints:
 │       ├── amc.mjs              # official listing and seat-map reader
 │       ├── codex-bridge.mjs     # read-only Codex state bridge
 │       ├── config.mjs           # config validation and secret loading
+│       ├── hard-timeout.mjs     # synchronous timeout cleanup/history
 │       ├── io.mjs               # atomic JSON and JSONL persistence
 │       ├── monitor.mjs          # orchestration, diffing, cadence
 │       ├── paths.mjs            # canonical local paths
@@ -91,8 +92,10 @@ The following rules are architectural constraints:
 ├── test/
 │   ├── alerts.test.mjs
 │   ├── amc-fixture.test.mjs
+│   ├── hard-timeout.test.mjs
 │   ├── seats.test.mjs
-│   └── time.test.mjs
+│   ├── time.test.mjs
+│   └── watchdog-logic.test.mjs
 ├── launchd/
 │   ├── com.azlan.odyssey-monitor.plist
 │   └── com.azlan.odyssey-monitor-watchdog.plist
@@ -194,12 +197,15 @@ Sent for:
 - A visible candidate AMC date failing official seat-page confirmation three consecutive times.
 - A previously bookable AMC date being retired after three consecutive double-settled checks confirm it is sold out or delisted.
 - A checker exceeding its eight-minute hard runtime limit.
-- A checker lock remaining held beyond its expected runtime.
+- A live checker retaining its lock beyond the expected runtime. A dead owner is stale residue, not a hung process.
+- One `RECOVERED` message after a fully successful check follows failed or hard-timeout runs.
 - One positive `HEALTH OK` message each Pacific day after 9:00 a.m.
 
 HEALTH is deliberately exempt from the acceptable-seat gate; monitor failures must not become silent merely because availability is zero.
 
 Alert keys are persisted in `data/state.json` to avoid repeated identical messages. Recurrent conditions use an incident-generation timestamp or measurement timestamp in the key, so a condition that genuinely recovers and later recurs can alert again without turning a single incident into repeated noise.
+
+The watchdog sends at most one Telegram message per invocation. Multiple simultaneous findings are combined into one bulleted HEALTH message while retaining each finding’s own dedupe key. Hard-timeout and live-hung findings share a 120-minute episode cooldown. New hard timeouts inside that window are counted rather than sent separately; the next allowed timeout-family or recovery message reports the suppressed tally.
 
 ## Polling and load control
 
@@ -253,7 +259,7 @@ Important fields:
     "excludedFrontRows": 6,
     "excludeWheelchair": true,
     "excludeCompanion": true,
-    "partySize": null,
+    "partySize": 1,
     "urgentAcceptableSeatThreshold": 20
   },
   "watch": {
@@ -272,7 +278,8 @@ Telegram ticket-message gating is configured separately:
   "notifications": {
     "minimumAcceptableSeatsForTicketMessages": 1,
     "healthAlertsBypassSeatMinimum": true,
-    "pendingSeatVerificationEscalationMinutes": 60
+    "pendingSeatVerificationEscalationMinutes": 60,
+    "timeoutFamilyCooldownMinutes": 120
   }
 }
 ```
@@ -288,7 +295,7 @@ Reliability escalation is configured under `polling`:
 }
 ```
 
-`partySize` must be `null` or a positive integer. `null` is the safe default because adjacency urgency is undefined without an actual party size.
+`partySize` must be `null` or a positive integer. It is currently `1`; `null` disables adjacency urgency when the party size is unknown.
 
 `dates`, `timeWindows`, and `preferredVenue` record user intent for future filtering. They are not currently used to suppress new-date alerts; missing a new date is considered worse than an extra relevant alert.
 
@@ -428,9 +435,11 @@ The Codex state is also snapshot based and remains the source of truth for Regal
 - A date visible in listings but unconfirmable through its official seat page remains fail-closed for ticket alerts and produces a HEALTH message after three consecutive confirmation failures.
 - Telegram failures do not erase monitoring observations.
 - State is written atomically and the run record is appended at completion.
-- The checker has an eight-minute hard timeout. A timeout marker is written synchronously before exit so the watchdog can alert even if the normal run snapshot never finishes.
+- The checker has an eight-minute hard timeout. Before forced exit it synchronously writes the timeout marker, appends a `hard_timeout` record to `runs.jsonl`, and removes the lock only when the lock still names its own PID.
 - The watchdog does not take the checker lock and writes separate watchdog state/history. A hung checker therefore cannot prevent its own failure alert.
 - A lock owned by a process that no longer exists is recovered immediately. A live lock older than eight minutes is reported as a hung checker.
+- A watchdog invocation sends one combined Telegram message, even when several liveness checks fail together.
+- Timeout-family alerts have a two-hour episode cooldown with a suppressed-event tally, followed by one explicit recovery message after a clean full check.
 - The watchdog verifies scheduler invocation, AMC listing success, AMC seat-map success, and Regal/Codex freshness independently.
 - The watchdog checks the oldest Regal horizon-showtime seat timestamp against a 24-hour maximum. Standalone AMC seat-map freshness is checked from the poller’s own clock.
 - The Codex heartbeat reads standalone liveness before doing browser work, while the standalone watchdog checks Codex freshness. Either control plane can expose failure of the other.
@@ -518,6 +527,10 @@ The test suite currently verifies:
 - adjacent-block-loss alerts
 - Pacific Wednesday cadence
 - immediate dead-checker-lock recovery
+- owned-lock cleanup and durable run history on hard timeout
+- one-send watchdog batching with per-finding dedupe
+- timeout-family cooldown and suppressed-event tally
+- recovery after failed/hard-timeout runs, including a timeout-streak fallback
 - the captured AMC fixture’s corrected 51 raw / 0 acceptable result
 
 Run:
@@ -528,6 +541,6 @@ npm test
 
 ## Remaining operational decision
 
-Set `partySize` when known. Optional preferred venue, dates, and time windows can also be recorded.
+Optional preferred venue, dates, and time windows can be recorded. Party size is already set to one.
 
 The first live daily `HEALTH OK` has been delivered successfully. Normal operation does not require manual Telegram tests.

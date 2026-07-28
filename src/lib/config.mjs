@@ -54,6 +54,14 @@ function validateConfig(config) {
     );
   }
   if (
+    !Number.isFinite(config.notifications.timeoutFamilyCooldownMinutes) ||
+    config.notifications.timeoutFamilyCooldownMinutes < 30
+  ) {
+    throw new Error(
+      "notifications.timeoutFamilyCooldownMinutes must be at least 30",
+    );
+  }
+  if (
     !Number.isFinite(config.polling?.maxCheckRuntimeMinutes) ||
     config.polling.maxCheckRuntimeMinutes < 1
   ) {

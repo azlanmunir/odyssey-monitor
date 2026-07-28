@@ -22,6 +22,19 @@ export async function appendJsonLine(file, value) {
   await fs.appendFile(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
 }
 
+export async function readJsonLines(file, fallback = []) {
+  try {
+    const text = await fs.readFile(file, "utf8");
+    return text
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch (error) {
+    if (error.code === "ENOENT") return fallback;
+    throw error;
+  }
+}
+
 export async function loadEnv(file) {
   let text;
   try {
