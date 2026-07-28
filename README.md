@@ -13,13 +13,13 @@ The implementation is complete, tested, and active. Both standalone `launchd` jo
 
 Telegram support is active and reads the existing private `.env`. Ticket messages require at least one acceptable seat. Failure alerts and the daily `HEALTH OK` are exempt from that gate because otherwise the monitor could fail silently when no good seats are available.
 
-One user decision is intentionally still unset:
+The party size is configured for a single ticket:
 
 ```json
-"partySize": null
+"partySize": 1
 ```
 
-Until party size is configured, the monitor calculates adjacent runs but does not emit “last adjacent block gone” alerts.
+With a party of one, any acceptable seat satisfies the party requirement, so scarcity urgency comes from the acceptable-seat threshold crossing rather than adjacency loss. Seat suggestions include single seats.
 
 ## Why this project exists
 
@@ -205,7 +205,7 @@ Alert keys are persisted in `data/state.json` to avoid repeated identical messag
 
 The launchd check job wakes every 15 minutes. The application decides whether an AMC check is due:
 
-- Wednesday 9:00 a.m.–6:00 p.m. Pacific: every 15 minutes.
+- Wednesday 7:00 a.m.–10:00 p.m. Pacific: every 15 minutes. The window is intentionally wider than AMC’s “usually posted by Wednesday afternoon” statement to cover early-morning and evening postings.
 - All other times: every 120 minutes.
 - Seat maps: every 480 minutes, plus new dates, new/watched showtimes, and required confirmations.
 

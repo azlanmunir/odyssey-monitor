@@ -9,14 +9,14 @@
     "excludedFrontRows": 6,
     "excludeWheelchair": true,
     "excludeCompanion": true,
-    "partySize": null,
+    "partySize": 1,
     "urgentAcceptableSeatThreshold": 20
   },
   "polling": {
     "normalMinutes": 120,
     "wednesdayBurstMinutes": 15,
-    "wednesdayBurstStartHour": 9,
-    "wednesdayBurstEndHour": 18,
+    "wednesdayBurstStartHour": 7,
+    "wednesdayBurstEndHour": 22,
     "seatRefreshMinutes": 480,
     "watchdogGraceMultiplier": 2.25,
     "codexHeartbeatMinutes": 240,
