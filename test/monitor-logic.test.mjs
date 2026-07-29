@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   candidateConfirmationHealthAlert,
   digestAlert,
+  listingCheckDue,
   newTrackedShowtimeAlert,
   recordCandidateConfirmationFailure,
   recordTrackedDateMissing,
@@ -10,6 +11,50 @@ import {
   trackedDateRetirementHealthAlert,
   trackedDateRetirementStatus,
 } from "../src/lib/monitor.mjs";
+
+test("every consecutive burst slot stays due despite one-minute check runtime", () => {
+  let anchor = null;
+  const slots = [
+    "2026-07-29T17:00:06Z",
+    "2026-07-29T17:15:05Z",
+    "2026-07-29T17:30:07Z",
+    "2026-07-29T17:45:04Z",
+  ];
+  for (const slot of slots) {
+    const now = new Date(slot);
+    assert.equal(
+      listingCheckDue(anchor, 15, now),
+      true,
+      `slot ${slot} must run`,
+    );
+    // runCheck stamps the anchor with the run's start time, not its finish.
+    anchor = now.toISOString();
+  }
+});
+
+test("finish-time anchoring skips the next slot even with jitter tolerance", () => {
+  // Regression shape of the original bug: a check started 17:00:06 but
+  // stamped its finish at 17:01:10, leaving the 17:15 slot at 13.9 minutes.
+  // Jitter tolerance alone cannot rescue this, which is why runCheck must
+  // anchor on the run's start time.
+  const finishAnchor = new Date("2026-07-29T17:01:10Z").toISOString();
+  assert.equal(
+    listingCheckDue(finishAnchor, 15, new Date("2026-07-29T17:15:05Z")),
+    false,
+  );
+});
+
+test("a forced off-slot check skips only the immediately following slot", () => {
+  const forcedAnchor = new Date("2026-07-29T17:51:30Z").toISOString();
+  assert.equal(
+    listingCheckDue(forcedAnchor, 15, new Date("2026-07-29T18:00:06Z")),
+    false,
+  );
+  assert.equal(
+    listingCheckDue(forcedAnchor, 15, new Date("2026-07-29T18:15:05Z")),
+    true,
+  );
+});
 
 function showtime(id, datetime, acceptableAvailable) {
   return {

@@ -214,6 +214,12 @@ export function newTrackedShowtimeAlert(
   return newShowtimeAlert(date, showtime, seatMap);
 }
 
+export function listingCheckDue(lastFullListingCheckAt, intervalMinutes, now = new Date()) {
+  // The anchor is the previous run's start time. One minute of tolerance
+  // absorbs scheduler jitter so a slot arriving seconds early is not skipped.
+  return minutesSince(lastFullListingCheckAt, now) >= intervalMinutes - 1;
+}
+
 function shouldRefreshSeats(state, config, force) {
   return (
     force ||
@@ -542,7 +548,7 @@ export async function runCheck(config, options = {}) {
 
     const due =
       options.force ||
-      minutesSince(state.lastFullListingCheckAt, now) >= run.intervalMinutes - 1;
+      listingCheckDue(state.lastFullListingCheckAt, run.intervalMinutes, now);
     if (!due) {
       run.status = "skipped_not_due";
       run.amcCheck = "skipped";
