@@ -542,7 +542,7 @@ export async function runCheck(config, options = {}) {
 
     const due =
       options.force ||
-      minutesSince(state.lastFullListingCheckAt, now) >= run.intervalMinutes;
+      minutesSince(state.lastFullListingCheckAt, now) >= run.intervalMinutes - 1;
     if (!due) {
       run.status = "skipped_not_due";
       run.amcCheck = "skipped";
@@ -788,7 +788,9 @@ export async function runCheck(config, options = {}) {
       }
 
       await dispatchAlerts(config, state, alertCandidates, options.dryRun, run.notifications);
-      state.lastFullListingCheckAt = new Date().toISOString();
+      // Stamp the run's start time so check runtime cannot push the next
+      // scheduler slot under the due threshold and halve the burst cadence.
+      state.lastFullListingCheckAt = now.toISOString();
       state.lastAmcSuccessAt = new Date().toISOString();
       state.amc.consecutiveFailures = 0;
       state.amc.failureOpen = false;
